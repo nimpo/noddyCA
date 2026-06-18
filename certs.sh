@@ -5,6 +5,18 @@
 #
 # Alter the following 5 declarations to suit: OR call this script with the env
 
+help() {
+cat<<EOF
+Run:
+DOMAIN=example.org CAName=CA MAKEWILDCARD=yes YES=y KEEPCAKEY=y CAPASSWD="useSomethingBetter" PASSWD="" ./certs.sh testserver1 testserver2
+Set the leading variables to override defaults and prompts.
+EOF
+exit 1
+}
+
+echo "$*" | grep -q '^[a-z0-9. -]\{1,\}$' || help
+echo "$*" | grep -q '\(^\| \)[.-]' && help
+
 if [ "$1" ]
 then
   declare -a servers=("$@")
@@ -17,10 +29,16 @@ UPLOADPATH=${UPLOADPATH:-etc/}
 REMOTEUSER=${REMOTEUSER:-$(id -un)}
 MAKEWILDCARD=${MAKEWILDCARD:-no}
 
-read -s -p "Set Password for the CA key: " CAPASSWD
-echo
-read -s -p "Set Password for the server PKCS12 files: " PASSWD
-echo
+if [ -z "$CAPASSWD" ]
+then
+  read -s -p "Set Password for the CA key: " CAPASSWD
+  echo
+fi
+if ! [[ -v PASSWD ]]
+then
+  read -s -p "Set Password for the server PKCS12 files: " PASSWD
+  echo
+fi
 echo
 echo 'This script will now generate a 5000-day CA called "'"/CN=${CAName}"'",'
 echo "and store it in ${CAName}-encrypted.key and ${CAName}.crt"
@@ -43,9 +61,9 @@ do
   echo
 done
 
-read -p "Continue [y/n]? " CONT
+[ -z "$YES" ] && read -p "Continue [y/n]? " YES
 
-[ "$CONT" = "y" ] || exit
+[ "$YES" = "y" ] || exit
 
 MYTMPDIR=`mktemp -p. -d`
 cd $MYTMPDIR || exit 1
@@ -76,10 +94,16 @@ EOF
   openssl req -new -nodes -out $fqdn-${CAName}.csr -newkey rsa:4096 -keyout $fqdn-${CAName}.key -subj "/CN=$fqdn"
   openssl x509 -req -in $fqdn-${CAName}.csr -CA ${CAName}.crt -CAkey ${CAName}.key -CAcreateserial -out $fqdn-${CAName}.crt -days 4385 -sha256 -extfile dshubssl-ext.cnf
   openssl pkcs12 -export -out $fqdn-${CAName}.pfx -inkey $fqdn-${CAName}.key -in $fqdn-${CAName}.crt -certfile ${CAName}.crt -passout pass:
-  openssl pkcs12 -export -out $fqdn-${CAName}-pass.pfx -inkey $fqdn-${CAName}.key -in $fqdn-${CAName}.crt -certfile ${CAName}.crt -passout "pass:$PASSWD"
+  [ "$PASSWD" ] && openssl pkcs12 -export -out $fqdn-${CAName}-pass.pfx -inkey $fqdn-${CAName}.key -in $fqdn-${CAName}.crt -certfile ${CAName}.crt -passout "pass:$PASSWD"
   rm $fqdn-${CAName}.csr dshubssl-ext.cnf
-echo  ssh $REMOTEUSER@$fqdn mkdir -p $UPLOADPATH
-echo  scp -p ${fqdn}-${CAName}.pfx ${fqdn}-${CAName}.key ${fqdn}-${CAName}.crt ${CAName}.crt ${REMOTEUSER}@${fqdn}:$UPLOADPATH
+  if ssh -o ConnectTimeout=5 $REMOTEUSER@$fqdn true
+  then
+    ssh $REMOTEUSER@$fqdn mkdir -p $UPLOADPATH
+    scp -p ${fqdn}-${CAName}.pfx ${fqdn}-${CAName}.key ${fqdn}-${CAName}.crt ${CAName}.crt ${REMOTEUSER}@${fqdn}:$UPLOADPATH
+  else
+    mkdir ../$UPLOADPATH
+    cp -p ${fqdn}-${CAName}.pfx ${fqdn}-${CAName}.key ${fqdn}-${CAName}.crt ${CAName}.crt ../$UPLOADPATH
+  fi
 done
 
-rm ${CAName}.key
+[ -n "$KEEPCAKEY" ] && rm ${CAName}.key
